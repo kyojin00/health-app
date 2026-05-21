@@ -1,5 +1,5 @@
 // app/(app)/workers/page.tsx
-// 근로자 목록 + 인라인 삭제/추가 + 선택 항목 엑셀 다운로드
+// 근로자 목록 + 인라인 삭제/추가 + 엑셀 다운로드 + 검진 진행 단계 표시
 
 "use client";
 
@@ -27,29 +27,34 @@ type WorkerStatus = {
   exam_count: number;
 };
 
+type ExamFlags = {
+  initial: boolean;     // 배치전 받음
+  followup: boolean;    // 배치후 받음
+  regular: boolean;     // 정기 특수 받음
+  general: boolean;     // 일반 받음
+};
+
 // ────────────────────────────────────────────────
-// CSV 생성 (UTF-8 BOM 포함, 엑셀에서 한글 정상 표시)
+// CSV 생성
 // ────────────────────────────────────────────────
-function downloadCSV(rows: WorkerStatus[], filename: string) {
+function downloadCSV(rows: WorkerStatus[], flagsMap: Map<string, ExamFlags>, filename: string) {
   const headers = [
     "부서", "이름", "직급", "입사일자", "연락처",
     "국적", "외국인여부", "검진유형",
-    "배치전필요", "마지막검진일", "마지막검진구분",
+    "배치전", "배치후", "정기특수", "일반",
+    "현재단계", "마지막검진일", "마지막검진구분",
     "주기(개월)", "다음예정일", "D-day",
   ];
 
   const lines = [headers.join(",")];
   for (const w of rows) {
+    const f = flagsMap.get(w.id) || { initial: false, followup: false, regular: false, general: false };
     const examType = w.requires_special ? "특수+일반" : "일반";
-    const initialKind = w.requires_special ? "배치전(특수)" : "일반검진";
+    const stage = computeStage(w, f);
     const dDay =
-      w.days_until_due === null
-        ? ""
-        : w.days_until_due < 0
-        ? `${Math.abs(w.days_until_due)}일 지남`
-        : w.days_until_due === 0
-        ? "오늘"
-        : `D-${w.days_until_due}`;
+      w.days_until_due === null ? "" :
+      w.days_until_due < 0 ? `${Math.abs(w.days_until_due)}일 지남` :
+      w.days_until_due === 0 ? "오늘" : `D-${w.days_until_due}`;
     const cells = [
       w.department_name || "",
       w.name,
@@ -59,18 +64,21 @@ function downloadCSV(rows: WorkerStatus[], filename: string) {
       w.nationality || "",
       w.is_foreign ? "Y" : "N",
       examType,
-      w.needs_initial ? initialKind : "",
+      f.initial ? "O" : "X",
+      f.followup ? "O" : (w.requires_special ? "-" : "해당없음"),
+      f.regular ? "O" : (w.requires_special ? "X" : "해당없음"),
+      f.general ? "O" : "X",
+      stage,
       w.last_exam_date || "",
       w.last_category || "",
       String(w.cycle_months),
       w.next_due_date || "",
       dDay,
     ];
-    // 쉼표/따옴표/줄바꿈 들어간 셀은 큰따옴표로 감싸기
     lines.push(cells.map(esc).join(","));
   }
 
-  const BOM = "\uFEFF"; // 엑셀 한글 깨짐 방지
+  const BOM = "\uFEFF";
   const blob = new Blob([BOM + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -88,10 +96,60 @@ function esc(s: string) {
   return s;
 }
 
-// 오늘 날짜 YYYYMMDD
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// ────────────────────────────────────────────────
+// 검진 진행 단계 계산
+// ────────────────────────────────────────────────
+function computeStage(w: WorkerStatus, f: ExamFlags): string {
+  if (!w.requires_special) {
+    // 사무직/출하 - 일반검진만
+    return f.general ? "일반 수검" : "배치전 필요";
+  }
+  // 생산직
+  if (!f.initial && !f.regular) return "배치전 필요";
+  if (f.regular) return "정기 특수";
+  if (f.initial && !f.regular) return "배치전 완료";
+  return "-";
+}
+
+// 진행 단계 배지
+function StageBadges({ w, f }: { w: WorkerStatus; f: ExamFlags }) {
+  if (!w.requires_special) {
+    // 사무직: 일반검진 받음 여부만
+    return (
+      <span className={`inline-block px-2 py-0.5 rounded text-xs ${
+        f.general ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"
+      }`}>
+        {f.general ? "✓ 일반" : "○ 일반"}
+      </span>
+    );
+  }
+  // 생산직: 배치전 / 배치후 / 정기특수
+  const cell = (label: string, done: boolean, subtle = false) => (
+    <span
+      className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
+        done
+          ? "bg-emerald-100 text-emerald-700"
+          : subtle
+          ? "bg-slate-50 text-slate-400 border border-dashed border-slate-200"
+          : "bg-red-50 text-red-600"
+      }`}
+      title={done ? `${label} 완료` : `${label} 미실시`}
+    >
+      {done ? "✓" : "○"} {label}
+    </span>
+  );
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {cell("배치전", f.initial)}
+      {cell("배치후", f.followup, true /* subtle: 의무 아님 */)}
+      {cell("정기", f.regular)}
+    </div>
+  );
 }
 
 // ────────────────────────────────────────────────
@@ -99,11 +157,13 @@ function todayStr() {
 // ────────────────────────────────────────────────
 export default function WorkersPage() {
   const [workers, setWorkers] = useState<WorkerStatus[]>([]);
+  const [flagsMap, setFlagsMap] = useState<Map<string, ExamFlags>>(new Map());
   const [depts, setDepts] = useState<{ name: string }[]>([]);
   const [q, setQ] = useState("");
   const [dept, setDept] = useState("");
   const [status, setStatus] = useState("");
-  const [examType, setExamType] = useState(""); // 검진유형 (특수/일반)
+  const [examType, setExamType] = useState("");
+  const [stageFilter, setStageFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -111,6 +171,7 @@ export default function WorkersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     const supabase = createClient();
+
     let query = supabase.from("worker_status").select("*").eq("active", true);
     if (dept) query = query.eq("department_name", dept);
     if (q) query = query.ilike("name", `%${q}%`);
@@ -120,17 +181,52 @@ export default function WorkersPage() {
     if (status === "overdue") query = query.lt("days_until_due", 0);
     if (examType === "special") query = query.eq("requires_special", true);
     if (examType === "general") query = query.eq("requires_special", false);
+
     const { data } = await query
       .order("department_name", { nullsFirst: false })
       .order("hire_date", { nullsFirst: false });
 
     const { data: d } = await supabase.from("departments").select("name").order("id");
-    setWorkers((data as WorkerStatus[]) || []);
+
+    // 검진 진행 단계 계산용: 활동 근로자의 모든 검진 기록 가져오기
+    const { data: exams } = await supabase
+      .from("examinations")
+      .select("worker_id, exam_category, exam_kind")
+      .limit(10000);
+
+    const fm = new Map<string, ExamFlags>();
+    for (const e of exams || []) {
+      const cur = fm.get(e.worker_id) || { initial: false, followup: false, regular: false, general: false };
+      const cat = e.exam_category || "";
+      const kind = e.exam_kind || "";
+      if (cat.includes("배치전") || kind.includes("배치전")) cur.initial = true;
+      if (cat.includes("배치후") || kind.includes("배치후")) cur.followup = true;
+      if (cat === "특수" || cat === "일반+특수") cur.regular = true;
+      if (cat === "일반" || cat === "일반+특수") cur.general = true;
+      fm.set(e.worker_id, cur);
+    }
+
+    let rows = (data as WorkerStatus[]) || [];
+
+    // 진행 단계 필터 (클라이언트 사이드)
+    if (stageFilter) {
+      rows = rows.filter((w) => {
+        const f = fm.get(w.id) || { initial: false, followup: false, regular: false, general: false };
+        if (stageFilter === "no_initial") return !f.initial && !f.regular && w.requires_special;
+        if (stageFilter === "initial_only") return w.requires_special && f.initial && !f.regular;
+        if (stageFilter === "regular") return w.requires_special && f.regular;
+        if (stageFilter === "office_no_general") return !w.requires_special && !f.general;
+        if (stageFilter === "office_general") return !w.requires_special && f.general;
+        return true;
+      });
+    }
+
+    setWorkers(rows);
+    setFlagsMap(fm);
     setDepts(d || []);
     setLoading(false);
-    // 필터 바뀌면 선택 초기화
     setSelected(new Set());
-  }, [q, dept, status, examType]);
+  }, [q, dept, status, examType, stageFilter]);
 
   useEffect(() => {
     load();
@@ -146,10 +242,7 @@ export default function WorkersPage() {
     const supabase = createClient();
     const { error } = await supabase.from("workers").delete().eq("id", w.id);
     setDeleting(null);
-    if (error) {
-      alert("삭제 실패: " + error.message);
-      return;
-    }
+    if (error) { alert("삭제 실패: " + error.message); return; }
     load();
   }
 
@@ -159,14 +252,10 @@ export default function WorkersPage() {
     const supabase = createClient();
     const { error } = await supabase.from("workers").update({ active: false }).eq("id", w.id);
     setDeleting(null);
-    if (error) {
-      alert("처리 실패: " + error.message);
-      return;
-    }
+    if (error) { alert("처리 실패: " + error.message); return; }
     load();
   }
 
-  // 선택 관련
   function toggleOne(id: string) {
     const next = new Set(selected);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -179,27 +268,28 @@ export default function WorkersPage() {
   const allChecked = workers.length > 0 && selected.size === workers.length;
   const someChecked = selected.size > 0 && selected.size < workers.length;
 
-  // 다운로드 대상: 선택 있으면 선택분, 없으면 현재 필터링된 전체
   const rowsToExport = useMemo(() => {
     if (selected.size === 0) return workers;
     return workers.filter((w) => selected.has(w.id));
   }, [selected, workers]);
 
   function exportSelected() {
-    if (rowsToExport.length === 0) {
-      alert("내려받을 인원이 없습니다");
-      return;
-    }
+    if (rowsToExport.length === 0) { alert("내려받을 인원이 없습니다"); return; }
     const tag = [
       examType === "special" ? "특수" : examType === "general" ? "일반" : "",
       status === "needs_initial" ? "배치전" :
       status === "overdue" ? "기한지남" :
       status === "due_30" ? "30일이내" :
       status === "due_90" ? "90일이내" : "",
+      stageFilter === "no_initial" ? "배치전필요" :
+      stageFilter === "initial_only" ? "배치전만완료" :
+      stageFilter === "regular" ? "정기수검중" :
+      stageFilter === "office_no_general" ? "일반미실시" :
+      stageFilter === "office_general" ? "일반수검" : "",
       dept,
     ].filter(Boolean).join("_");
     const filename = `근로자명단${tag ? "_" + tag : ""}_${todayStr()}.csv`;
-    downloadCSV(rowsToExport, filename);
+    downloadCSV(rowsToExport, flagsMap, filename);
   }
 
   return (
@@ -211,11 +301,6 @@ export default function WorkersPage() {
             onClick={exportSelected}
             disabled={rowsToExport.length === 0}
             className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-            title={
-              selected.size > 0
-                ? `선택한 ${selected.size}명 내려받기`
-                : `필터된 ${workers.length}명 전체 내려받기`
-            }
           >
             📊 엑셀 다운로드 ({selected.size > 0 ? `선택 ${selected.size}` : `전체 ${workers.length}`}명)
           </button>
@@ -242,9 +327,7 @@ export default function WorkersPage() {
           className="px-3 py-1.5 border border-slate-300 rounded-md text-sm"
         >
           <option value="">전체 부서</option>
-          {depts.map((d) => (
-            <option key={d.name} value={d.name}>{d.name}</option>
-          ))}
+          {depts.map((d) => (<option key={d.name} value={d.name}>{d.name}</option>))}
         </select>
         <select
           value={examType}
@@ -256,18 +339,29 @@ export default function WorkersPage() {
           <option value="general">일반검진만 (사무실/출하)</option>
         </select>
         <select
+          value={stageFilter}
+          onChange={(e) => setStageFilter(e.target.value)}
+          className="px-3 py-1.5 border border-slate-300 rounded-md text-sm"
+        >
+          <option value="">진행 단계 전체</option>
+          <option value="no_initial">생산직 - 배치전 필요</option>
+          <option value="initial_only">생산직 - 배치전만 완료 (정기 미실시)</option>
+          <option value="regular">생산직 - 정기 특수 수검중</option>
+          <option value="office_no_general">사무직 - 일반 미실시</option>
+          <option value="office_general">사무직 - 일반 수검</option>
+        </select>
+        <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           className="px-3 py-1.5 border border-slate-300 rounded-md text-sm"
         >
-          <option value="">상태 전체</option>
-          <option value="needs_initial">배치전 필요</option>
+          <option value="">마감 전체</option>
           <option value="overdue">검진 기한 지남</option>
           <option value="due_30">30일 이내 마감</option>
           <option value="due_90">90일 이내 마감</option>
         </select>
         <button
-          onClick={() => { setQ(""); setDept(""); setStatus(""); setExamType(""); }}
+          onClick={() => { setQ(""); setDept(""); setStatus(""); setExamType(""); setStageFilter(""); }}
           className="text-xs text-slate-500 hover:text-slate-900 ml-1"
         >
           필터 초기화
@@ -278,7 +372,7 @@ export default function WorkersPage() {
         </span>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -290,105 +384,91 @@ export default function WorkersPage() {
                   onChange={toggleAll}
                 />
               </th>
-              <th className="text-left px-4 py-2 font-medium">이름</th>
-              <th className="text-left px-4 py-2 font-medium">부서</th>
-              <th className="text-left px-4 py-2 font-medium">직급</th>
-              <th className="text-left px-4 py-2 font-medium">입사일</th>
-              <th className="text-left px-4 py-2 font-medium">주기</th>
-              <th className="text-left px-4 py-2 font-medium">마지막 검진</th>
-              <th className="text-left px-4 py-2 font-medium">다음 예정일</th>
-              <th className="text-right px-4 py-2 font-medium">D-day</th>
-              <th className="text-right px-4 py-2 font-medium">관리</th>
+              <th className="text-left px-3 py-2 font-medium">이름</th>
+              <th className="text-left px-3 py-2 font-medium">부서</th>
+              <th className="text-left px-3 py-2 font-medium">직급</th>
+              <th className="text-left px-3 py-2 font-medium">입사일</th>
+              <th className="text-left px-3 py-2 font-medium">검진 진행</th>
+              <th className="text-left px-3 py-2 font-medium">주기</th>
+              <th className="text-left px-3 py-2 font-medium">마지막 검진</th>
+              <th className="text-left px-3 py-2 font-medium">다음 예정일</th>
+              <th className="text-right px-3 py-2 font-medium">D-day</th>
+              <th className="text-right px-3 py-2 font-medium">관리</th>
             </tr>
           </thead>
           <tbody>
-            {workers.map((w) => (
-              <tr
-                key={w.id}
-                className={`border-t border-slate-100 hover:bg-slate-50 ${
-                  selected.has(w.id) ? "bg-brand-50/50" : ""
-                }`}
-              >
-                <td className="px-3 py-2 text-center">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(w.id)}
-                    onChange={() => toggleOne(w.id)}
-                  />
-                </td>
-                <td className="px-4 py-2">
-                  <Link href={`/workers/${w.id}`} className="text-brand-600 hover:underline font-medium">
-                    {w.name}
-                  </Link>
-                  {w.needs_initial && (
-                    <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
-                      배치전
+            {workers.map((w) => {
+              const f = flagsMap.get(w.id) || { initial: false, followup: false, regular: false, general: false };
+              return (
+                <tr key={w.id} className={`border-t border-slate-100 hover:bg-slate-50 ${selected.has(w.id) ? "bg-brand-50/50" : ""}`}>
+                  <td className="px-3 py-2 text-center">
+                    <input type="checkbox" checked={selected.has(w.id)} onChange={() => toggleOne(w.id)} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Link href={`/workers/${w.id}`} className="text-brand-600 hover:underline font-medium">
+                      {w.name}
+                    </Link>
+                    {w.nationality && w.nationality !== "한국" && (
+                      <span className="ml-2 text-xs text-slate-400" title={w.nationality}>외</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-slate-600">{w.department_name || "-"}</td>
+                  <td className="px-3 py-2 text-slate-600">{w.position || "-"}</td>
+                  <td className="px-3 py-2 text-slate-600 text-xs">{w.hire_date || "-"}</td>
+                  <td className="px-3 py-2"><StageBadges w={w} f={f} /></td>
+                  <td className="px-3 py-2">
+                    <span className={`text-xs px-2 py-0.5 rounded ${
+                      w.requires_special === false ? "bg-sky-100 text-sky-700" :
+                      w.cycle_months === 6 ? "bg-red-100 text-red-700" :
+                      w.cycle_months === 24 ? "bg-blue-100 text-blue-700" :
+                      "bg-slate-100 text-slate-700"
+                    }`}>
+                      {w.requires_special === false ? "일반" : `${w.cycle_months}개월`}
                     </span>
-                  )}
-                  {w.nationality && w.nationality !== "한국" && (
-                    <span className="ml-2 text-xs text-slate-400" title={w.nationality}>외</span>
-                  )}
-                </td>
-                <td className="px-4 py-2 text-slate-600">{w.department_name || "-"}</td>
-                <td className="px-4 py-2 text-slate-600">{w.position || "-"}</td>
-                <td className="px-4 py-2 text-slate-600 text-xs">{w.hire_date || "-"}</td>
-                <td className="px-4 py-2">
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    w.requires_special === false ? "bg-sky-100 text-sky-700" :
-                    w.cycle_months === 6 ? "bg-red-100 text-red-700" :
-                    w.cycle_months === 24 ? "bg-blue-100 text-blue-700" :
-                    "bg-slate-100 text-slate-700"
+                  </td>
+                  <td className="px-3 py-2 text-slate-600">{w.last_exam_date || "-"}</td>
+                  <td className="px-3 py-2">{w.next_due_date || "-"}</td>
+                  <td className={`px-3 py-2 text-right font-mono ${
+                    w.days_until_due === null ? "text-slate-400" :
+                    w.days_until_due < 0 ? "text-red-600 font-bold" :
+                    w.days_until_due <= 30 ? "text-orange-600 font-semibold" :
+                    w.days_until_due <= 90 ? "text-amber-600" :
+                    "text-slate-600"
                   }`}>
-                    {w.requires_special === false ? "일반" : `${w.cycle_months}개월`}
-                    {w.cycle_locked && w.requires_special !== false && " 🔒"}
-                  </span>
-                </td>
-                <td className="px-4 py-2 text-slate-600">{w.last_exam_date || "-"}</td>
-                <td className="px-4 py-2">{w.next_due_date || "-"}</td>
-                <td className={`px-4 py-2 text-right font-mono ${
-                  w.days_until_due === null ? "text-slate-400" :
-                  w.days_until_due < 0 ? "text-red-600 font-bold" :
-                  w.days_until_due <= 30 ? "text-orange-600 font-semibold" :
-                  w.days_until_due <= 90 ? "text-amber-600" :
-                  "text-slate-600"
-                }`}>
-                  {w.days_until_due === null ? "-" :
-                   w.days_until_due < 0 ? `${Math.abs(w.days_until_due)}일 지남` :
-                   w.days_until_due === 0 ? "오늘" :
-                   `D-${w.days_until_due}`}
-                </td>
-                <td className="px-4 py-2 text-right whitespace-nowrap">
-                  <button
-                    onClick={() => deactivate(w)}
-                    disabled={deleting === w.id}
-                    className="text-xs text-slate-500 hover:text-slate-900 mr-2 disabled:opacity-50"
-                    title="검진 기록은 남기고 퇴직 처리"
-                  >
-                    퇴직
-                  </button>
-                  <button
-                    onClick={() => deleteWorker(w)}
-                    disabled={deleting === w.id}
-                    className="text-xs text-red-600 hover:text-red-800 hover:underline disabled:opacity-50"
-                    title="완전 삭제 (검진 기록도 함께 삭제)"
-                  >
-                    {deleting === w.id ? "삭제중..." : "삭제"}
-                  </button>
-                </td>
-              </tr>
-            ))}
+                    {w.days_until_due === null ? "-" :
+                     w.days_until_due < 0 ? `${Math.abs(w.days_until_due)}일 지남` :
+                     w.days_until_due === 0 ? "오늘" :
+                     `D-${w.days_until_due}`}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <button
+                      onClick={() => deactivate(w)}
+                      disabled={deleting === w.id}
+                      className="text-xs text-slate-500 hover:text-slate-900 mr-2 disabled:opacity-50"
+                    >퇴직</button>
+                    <button
+                      onClick={() => deleteWorker(w)}
+                      disabled={deleting === w.id}
+                      className="text-xs text-red-600 hover:text-red-800 hover:underline disabled:opacity-50"
+                    >{deleting === w.id ? "삭제중..." : "삭제"}</button>
+                  </td>
+                </tr>
+              );
+            })}
             {!loading && workers.length === 0 && (
-              <tr><td colSpan={10} className="text-center py-8 text-slate-400">데이터 없음</td></tr>
+              <tr><td colSpan={11} className="text-center py-8 text-slate-400">데이터 없음</td></tr>
             )}
             {loading && workers.length === 0 && (
-              <tr><td colSpan={10} className="text-center py-8 text-slate-400">불러오는 중...</td></tr>
+              <tr><td colSpan={11} className="text-center py-8 text-slate-400">불러오는 중...</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
-      <div className="text-xs text-slate-500">
-        💡 팁: 필터 + 체크박스로 원하는 인원 골라 엑셀 받기. 예) 검진유형=특수검진 + 상태=배치전 필요 → 전체 선택 → 다운로드
+      <div className="text-xs text-slate-500 space-y-1">
+        <div>💡 <strong>검진 진행 컬럼 보는 법</strong>:</div>
+        <div className="ml-4">• 생산직: <span className="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">✓ 배치전</span> <span className="bg-slate-50 text-slate-400 border border-dashed border-slate-200 px-1.5 py-0.5 rounded">○ 배치후</span> <span className="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">✓ 정기</span> 순서. 점선=의무 아님</div>
+        <div className="ml-4">• 사무직/출하: 일반검진 한 번이라도 받았는지만 표시</div>
       </div>
     </div>
   );
