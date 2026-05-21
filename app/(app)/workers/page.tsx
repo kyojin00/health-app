@@ -219,6 +219,7 @@ export default function WorkersPage() {
     if (stageFilter) {
       rows = rows.filter((w) => {
         const f = fm.get(w.id) || { initial: false, followup: false, regular: false, general: false };
+        if (stageFilter === "all_no_exam") return !f.initial && !f.followup && !f.regular && !f.general;
         if (stageFilter === "no_initial") return !f.initial && !f.regular && w.requires_special;
         if (stageFilter === "initial_only") return w.requires_special && f.initial && !f.regular;
         if (stageFilter === "regular") return w.requires_special && f.regular;
@@ -288,6 +289,7 @@ export default function WorkersPage() {
       status === "overdue" ? "기한지남" :
       status === "due_30" ? "30일이내" :
       status === "due_90" ? "90일이내" : "",
+      stageFilter === "all_no_exam" ? "검진안받음" :
       stageFilter === "no_initial" ? "배치전필요" :
       stageFilter === "initial_only" ? "배치전만완료" :
       stageFilter === "regular" ? "정기수검중" :
@@ -351,6 +353,7 @@ export default function WorkersPage() {
           className="px-3 py-1.5 border border-slate-300 rounded-md text-sm"
         >
           <option value="">진행 단계 전체</option>
+          <option value="all_no_exam">⚠️ 검진 한 번도 안 받음</option>
           <option value="no_initial">생산직 - 배치전 필요</option>
           <option value="initial_only">생산직 - 배치전만 완료 (정기 미실시)</option>
           <option value="regular">생산직 - 정기 특수 수검중</option>
