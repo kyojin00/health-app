@@ -49,6 +49,9 @@ function downloadCSV(rows: WorkerStatus[], flagsMap: Map<string, ExamFlags>, fil
   const lines = [headers.join(",")];
   for (const w of rows) {
     const f = flagsMap.get(w.id) || { initial: false, followup: false, regular: false, general: false };
+    // 정기 받았으면 배치전/배치후 자동 완료
+    const initialDone = f.initial || f.regular;
+    const followupDone = f.followup || f.regular;
     const examType = w.requires_special ? "특수+일반" : "일반";
     const stage = computeStage(w, f);
     const dDay =
@@ -64,9 +67,9 @@ function downloadCSV(rows: WorkerStatus[], flagsMap: Map<string, ExamFlags>, fil
       w.nationality || "",
       w.is_foreign ? "Y" : "N",
       examType,
-      f.initial ? "O" : "X",
-      f.followup ? "O" : (w.requires_special ? "-" : "해당없음"),
-      f.regular ? "O" : (w.requires_special ? "X" : "해당없음"),
+      w.requires_special ? (initialDone ? "O" : "X") : "해당없음",
+      w.requires_special ? (followupDone ? "O" : "X") : "해당없음",
+      w.requires_special ? (f.regular ? "O" : "X") : "해당없음",
       f.general ? "O" : "X",
       stage,
       w.last_exam_date || "",
@@ -120,34 +123,38 @@ function computeStage(w: WorkerStatus, f: ExamFlags): string {
 function StageBadges({ w, f }: { w: WorkerStatus; f: ExamFlags }) {
   if (!w.requires_special) {
     // 사무직: 일반검진 받음 여부만
-    return (
-      <span className={`inline-block px-2 py-0.5 rounded text-xs ${
-        f.general ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"
-      }`}>
-        {f.general ? "✓ 일반" : "○ 일반"}
+    return f.general ? (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-emerald-500 text-white">
+        <span>✓</span><span>일반</span>
+      </span>
+    ) : (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white">
+        <span>✗</span><span>일반</span>
       </span>
     );
   }
-  // 생산직: 배치전 / 배치후 / 정기특수
-  const cell = (label: string, done: boolean, subtle = false) => (
+
+  // 생산직 - 정기 받았으면 배치전/배치후도 자동으로 완료 처리
+  const initialDone = f.initial || f.regular;
+  const followupDone = f.followup || f.regular;
+  const regularDone = f.regular;
+
+  const cell = (label: string, done: boolean) => (
     <span
-      className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
-        done
-          ? "bg-emerald-100 text-emerald-700"
-          : subtle
-          ? "bg-slate-50 text-slate-400 border border-dashed border-slate-200"
-          : "bg-red-50 text-red-600"
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold ${
+        done ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
       }`}
       title={done ? `${label} 완료` : `${label} 미실시`}
     >
-      {done ? "✓" : "○"} {label}
+      <span>{done ? "✓" : "✗"}</span>
+      <span>{label}</span>
     </span>
   );
   return (
     <div className="flex gap-1 flex-wrap">
-      {cell("배치전", f.initial)}
-      {cell("배치후", f.followup, true /* subtle: 의무 아님 */)}
-      {cell("정기", f.regular)}
+      {cell("배치전", initialDone)}
+      {cell("배치후", followupDone)}
+      {cell("정기", regularDone)}
     </div>
   );
 }
@@ -467,8 +474,15 @@ export default function WorkersPage() {
 
       <div className="text-xs text-slate-500 space-y-1">
         <div>💡 <strong>검진 진행 컬럼 보는 법</strong>:</div>
-        <div className="ml-4">• 생산직: <span className="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">✓ 배치전</span> <span className="bg-slate-50 text-slate-400 border border-dashed border-slate-200 px-1.5 py-0.5 rounded">○ 배치후</span> <span className="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">✓ 정기</span> 순서. 점선=의무 아님</div>
-        <div className="ml-4">• 사무직/출하: 일반검진 한 번이라도 받았는지만 표시</div>
+        <div className="ml-4 flex items-center gap-2 flex-wrap">
+          <span>완료:</span>
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-emerald-500 text-white"><span>✓</span><span>배치전</span></span>
+          <span className="mx-2">/</span>
+          <span>미실시:</span>
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white"><span>✗</span><span>배치전</span></span>
+        </div>
+        <div className="ml-4">• 정기 특수 수검 중인 사람은 배치전·배치후 자동으로 완료 처리됨</div>
+        <div className="ml-4">• 사무직/출하는 일반검진 받았는지 하나만 표시</div>
       </div>
     </div>
   );
