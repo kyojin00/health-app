@@ -49,9 +49,12 @@ function downloadCSV(rows: WorkerStatus[], flagsMap: Map<string, ExamFlags>, fil
   const lines = [headers.join(",")];
   for (const w of rows) {
     const f = flagsMap.get(w.id) || { initial: false, followup: false, regular: false, general: false };
-    // 정기 받았으면 배치전/배치후 자동 완료
+    const isOverdue = w.days_until_due !== null && w.days_until_due < 0;
+    // 정기 받았으면 배치전/배치후 자동 완료, 단 정기/일반은 주기 지나면 미실시
     const initialDone = f.initial || f.regular;
     const followupDone = f.followup || f.regular;
+    const regularCurrent = f.regular && !isOverdue;
+    const generalCurrent = f.general && !isOverdue;
     const examType = w.requires_special ? "특수+일반" : "일반";
     const stage = computeStage(w, f);
     const dDay =
@@ -69,8 +72,8 @@ function downloadCSV(rows: WorkerStatus[], flagsMap: Map<string, ExamFlags>, fil
       examType,
       w.requires_special ? (initialDone ? "O" : "X") : "해당없음",
       w.requires_special ? (followupDone ? "O" : "X") : "해당없음",
-      w.requires_special ? (f.regular ? "O" : "X") : "해당없음",
-      f.general ? "O" : "X",
+      w.requires_special ? (regularCurrent ? "O" : "X") : "해당없음",
+      generalCurrent ? "O" : "X",
       stage,
       w.last_exam_date || "",
       w.last_category || "",
@@ -108,43 +111,52 @@ function todayStr() {
 // 검진 진행 단계 계산
 // ────────────────────────────────────────────────
 function computeStage(w: WorkerStatus, f: ExamFlags): string {
+  const isOverdue = w.days_until_due !== null && w.days_until_due < 0;
   if (!w.requires_special) {
     // 사무직/출하 - 일반검진만
-    return f.general ? "일반 수검" : "배치전 필요";
+    if (!f.general) return "배치전 필요";
+    if (isOverdue) return "일반 주기 지남";
+    return "일반 수검";
   }
   // 생산직
   if (!f.initial && !f.regular) return "배치전 필요";
+  if (f.regular && isOverdue) return "정기 주기 지남";
   if (f.regular) return "정기 특수";
-  if (f.initial && !f.regular) return "배치전 완료";
+  if (f.initial && !f.regular) return "배치전 완료 (정기 대기)";
   return "-";
 }
 
 // 진행 단계 배지
 function StageBadges({ w, f }: { w: WorkerStatus; f: ExamFlags }) {
+  const isOverdue = w.days_until_due !== null && w.days_until_due < 0;
+
   if (!w.requires_special) {
-    // 사무직: 일반검진 받음 여부만
-    return f.general ? (
+    // 사무직: 일반검진 받음 여부 (주기 지났으면 미실시로 표시)
+    const generalCurrent = f.general && !isOverdue;
+    return generalCurrent ? (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-emerald-500 text-white">
         <span>✓</span><span>일반</span>
       </span>
     ) : (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-500 text-white"
+        title={f.general ? "주기 지남 - 재검 필요" : "일반검진 미실시"}>
         <span>✗</span><span>일반</span>
       </span>
     );
   }
 
-  // 생산직 - 정기 받았으면 배치전/배치후도 자동으로 완료 처리
+  // 생산직 - 배치전/배치후는 1회성이므로 한 번 받았으면 영구 완료
+  // 정기는 주기가 지나면 미실시로 표시
   const initialDone = f.initial || f.regular;
   const followupDone = f.followup || f.regular;
-  const regularDone = f.regular;
+  const regularCurrent = f.regular && !isOverdue;
 
-  const cell = (label: string, done: boolean) => (
+  const cell = (label: string, done: boolean, overdue = false) => (
     <span
       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold ${
         done ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
       }`}
-      title={done ? `${label} 완료` : `${label} 미실시`}
+      title={done ? `${label} 완료` : overdue ? `${label} 주기 지남 - 재검 필요` : `${label} 미실시`}
     >
       <span>{done ? "✓" : "✗"}</span>
       <span>{label}</span>
@@ -154,7 +166,7 @@ function StageBadges({ w, f }: { w: WorkerStatus; f: ExamFlags }) {
     <div className="flex gap-1 flex-wrap">
       {cell("배치전", initialDone)}
       {cell("배치후", followupDone)}
-      {cell("정기", regularDone)}
+      {cell("정기", regularCurrent, f.regular /* 받았는데 주기 지난 케이스 */)}
     </div>
   );
 }
