@@ -115,8 +115,8 @@ export default function WorkersPage() {
     if (dept) query = query.eq("department_name", dept);
     if (q) query = query.ilike("name", `%${q}%`);
     if (status === "needs_initial") query = query.eq("needs_initial", true);
-    if (status === "due_30") query = query.lte("days_until_due", 30).gte("days_until_due", -3650);
-    if (status === "due_90") query = query.lte("days_until_due", 90).gte("days_until_due", -3650);
+    if (status === "due_30") query = query.gte("days_until_due", 0).lte("days_until_due", 30);
+    if (status === "due_90") query = query.gte("days_until_due", 0).lte("days_until_due", 90);
     if (status === "overdue") query = query.lt("days_until_due", 0);
     if (examType === "special") query = query.eq("requires_special", true);
     if (examType === "general") query = query.eq("requires_special", false);
